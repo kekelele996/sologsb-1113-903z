@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import Alert from '@mui/material/Alert';
 import AlertTitle from '@mui/material/AlertTitle';
 import Box from '@mui/material/Box';
+import Button from '@mui/material/Button';
 import Card from '@mui/material/Card';
 import CardContent from '@mui/material/CardContent';
 import MenuItem from '@mui/material/MenuItem';
@@ -14,12 +15,14 @@ import StatusChip from '../components/common/StatusChip';
 import ConflictBadge from '../components/common/ConflictBadge';
 import { usePersistentStore } from '../hooks/usePersistentStore';
 import { useConflictCheck } from '../hooks/useConflictCheck';
+import { useMaintenanceConflicts } from '../hooks/useMaintenanceConflicts';
 import { useNightStore } from '../stores/nightStore';
 import { useSessionStore } from '../stores/sessionStore';
 import { useTargetStore } from '../stores/targetStore';
 import { useEquipmentStore } from '../stores/equipmentStore';
 import { NIGHT_TOTAL_MINUTES, TARGET_COLOR } from '../types';
 import { altitudeAt, axisMinutes, isBelowThreshold, minutesToTime, moonBrightnessFactor, moonConflict, moonPhaseText, timelineTicks } from '../utils/astro';
+import { Link as RouterLink } from 'react-router-dom';
 
 /** 本夜编排总览：30 分钟刻度时间轴 + 月相与月出月落条带 + 冲突与标灰提示 */
 export default function OverviewPage() {
@@ -34,6 +37,7 @@ export default function OverviewPage() {
   const { conflictIds, conflictsOfNight } = useConflictCheck();
 
   const night = nights.find((item) => item.id === currentNightId) ?? nights[0];
+  const maintenance = useMaintenanceConflicts(night?.id);
   const nightSessions = useMemo(() => sessions.filter((session) => session.nightId === night?.id), [sessions, night?.id]);
   const ids = useMemo(() => conflictIds(night?.id), [conflictIds, night?.id]);
   const conflicts = useMemo(() => conflictsOfNight(night?.id ?? ''), [conflictsOfNight, night?.id]);
@@ -165,6 +169,32 @@ export default function OverviewPage() {
           {conflicts.map((conflict) => (
             <div key={`${conflict.sessionId}-${conflict.otherId}`}>
               排程段 {conflict.sessionId} 与 {conflict.otherId} 在同一望远镜（{telescopeById(conflict.telescopeId)?.code ?? conflict.telescopeId}）上{conflict.overlapText}
+            </div>
+          ))}
+        </Alert>
+      ) : null}
+
+      {maintenance.actionable.length > 0 || maintenance.locked.length > 0 ? (
+        <Alert
+          severity={maintenance.actionable.length ? 'warning' : 'info'}
+          sx={{ mb: 2 }}
+          action={
+            <Button color="inherit" size="small" component={RouterLink} to="/equipment">
+              去设备分配视图裁定
+            </Button>
+          }
+        >
+          <AlertTitle>
+            维护组停机时段与本夜排程有 {maintenance.actionable.length + maintenance.locked.length} 处相互牵制
+            {maintenance.actionable.length ? `（${maintenance.actionable.length} 处待值班人裁定` : ''}
+            {maintenance.actionable.length && maintenance.locked.length ? '，' : ''}
+            {maintenance.locked.length ? `${maintenance.locked.length} 处为已完成段、做完不动仅留痕` : ''}
+            {maintenance.actionable.length ? '）' : ''}
+          </AlertTitle>
+          {maintenance.actionable.map((conflict) => (
+            <div key={`${conflict.window.id}-${conflict.session.id}`}>
+              {telescopeById(conflict.telescopeId)?.code}：{conflict.session.startTime}-{conflict.session.endTime} {targetById(conflict.session.targetId)?.name ?? ''} 撞维修窗口「
+              {conflict.window.reason}」（{conflict.overlapText}）
             </div>
           ))}
         </Alert>

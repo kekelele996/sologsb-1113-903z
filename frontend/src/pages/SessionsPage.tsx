@@ -25,6 +25,7 @@ import ConflictBadge from '../components/common/ConflictBadge';
 import FieldRow from '../components/common/FieldRow';
 import { usePersistentStore } from '../hooks/usePersistentStore';
 import { useConflictCheck } from '../hooks/useConflictCheck';
+import { useMaintenanceConflicts } from '../hooks/useMaintenanceConflicts';
 import { useSessionStore } from '../stores/sessionStore';
 import { useNightStore } from '../stores/nightStore';
 import { useTargetStore } from '../stores/targetStore';
@@ -58,6 +59,7 @@ export default function SessionsPage() {
   const telescopes = useEquipmentStore((s) => s.telescopes);
   const instruments = useEquipmentStore((s) => s.instruments);
   const { findConflicts, conflictIds } = useConflictCheck();
+  const { conflictsForSession } = useMaintenanceConflicts();
 
   /** 支持从设备分配视图一键跳转：?night=<夜ID>&highlight=<排程段ID> */
   const [searchParams] = useSearchParams();
@@ -116,6 +118,12 @@ export default function SessionsPage() {
       ignoreSessionId: editingId || undefined,
     });
   }, [dialogOpen, findConflicts, form.nightId, form.telescopeId, form.startTime, form.endTime, editingId]);
+
+  /** 与维护组维修窗口的相互牵制（只提示，不替维护侧改窗口；冲突裁定在设备分配视图） */
+  const liveMaintenanceConflicts = useMemo(() => {
+    if (!dialogOpen) return [];
+    return conflictsForSession(form.nightId, form.telescopeId, form.startTime, form.endTime, editingId || undefined);
+  }, [dialogOpen, conflictsForSession, form.nightId, form.telescopeId, form.startTime, form.endTime, editingId]);
 
   function openCreate() {
     setEditingId('');
@@ -353,6 +361,13 @@ export default function SessionsPage() {
               时段校验通过，该望远镜此时段空闲
             </Alert>
           )}
+          {liveMaintenanceConflicts.length > 0 ? (
+            <Alert severity="warning" sx={{ mb: 1.5 }}>
+              该时段与维护组登记的 {liveMaintenanceConflicts.length} 个停机窗口重叠，维修窗口由维护组持有、编排端不能改：
+              {liveMaintenanceConflicts.map((conflict) => ` ${conflict.window.startTime}-${conflict.window.endTime}（${conflict.window.reason}，${conflict.overlapText}）`).join('；')}
+              ；可保存但相互牵制需到设备分配视图等值班人裁定。
+            </Alert>
+          ) : null}
           <FieldRow label="观测夜" required>
             <TextField select size="small" fullWidth value={form.nightId} onChange={(event) => setForm({ ...form, nightId: event.target.value })}>
               {nights.map((night) => (
