@@ -1,12 +1,12 @@
 import Dexie, { type Table } from 'dexie';
 import { useEffect, useState } from 'react';
-import type { Instrument, ObsNight, ObsSession, ObsTarget, Telescope } from '../types';
+import type { Instrument, MaintenanceAdjudication, MaintenanceWindow, ObsNight, ObsSession, ObsTarget, Telescope } from '../types';
 
 /** IndexedDB 库名（浏览器本地存储，无后端） */
 export const DB_NAME = 'gbobsplan-db';
 
 /** 当前数据结构版本，写入每条记录并用于升级迁移判定 */
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 class ObsPlanDB extends Dexie {
   targets!: Table<ObsTarget, string>;
@@ -14,6 +14,8 @@ class ObsPlanDB extends Dexie {
   telescopes!: Table<Telescope, string>;
   instruments!: Table<Instrument, string>;
   nights!: Table<ObsNight, string>;
+  maintenanceWindows!: Table<MaintenanceWindow, string>;
+  adjudications!: Table<MaintenanceAdjudication, string>;
   meta!: Table<{ key: string; value: string }, string>;
 
   constructor() {
@@ -55,12 +57,24 @@ class ObsPlanDB extends Dexie {
             }
           });
       });
+
+    // v3：新增维护组持有的维修窗口表与值班人裁定记录表（与排程段分表存储，互不替对方改数据）
+    this.version(3).stores({
+      targets: 'id, name, catalog, type, priority, magnitude',
+      sessions: 'id, nightId, targetId, telescopeId, instrumentId, startTime, status, backupNightId',
+      telescopes: 'id, code, status',
+      instruments: 'id, model, telescopeCode, terminalType',
+      nights: 'id, date, siteName, primary, backup',
+      maintenanceWindows: 'id, telescopeId, startDate, endDate',
+      adjudications: 'id, sessionId, windowId, decision',
+      meta: 'key',
+    });
   }
 }
 
 export const db = new ObsPlanDB();
 
-export type TableName = 'targets' | 'sessions' | 'telescopes' | 'instruments' | 'nights';
+export type TableName = 'targets' | 'sessions' | 'telescopes' | 'instruments' | 'nights' | 'maintenanceWindows' | 'adjudications';
 
 /** 写入单条记录（Dexie 读写封装，store 的增删改统一走这里） */
 export async function persistRow(table: TableName, row: unknown): Promise<void> {
@@ -134,16 +148,24 @@ const SEED_SESSIONS: ObsSession[] = [
   { id: 's-14', nightId: 'night-002', targetId: 'target-001', startTime: '02:10', endTime: '03:10', telescopeId: 'tel-001', instrumentId: 'ins-002', filterSlot: 'L', plannedFrames: 30, status: '待执行', schemaVersion: SCHEMA_VERSION },
 ];
 
+/** 维护组登记的维修窗口：T-02 在 10-12 当晚检修，与 night-002 的 T-02 排程段互相牵制 */
+const SEED_MAINTENANCE_WINDOWS: MaintenanceWindow[] = [
+  { id: 'mw-001', telescopeId: 'tel-002', startDate: '2025-10-12', endDate: '2025-10-12', reason: '赤道仪定期检修', createdBy: '维护组-老周', createdAt: '2025-10-08T09:00:00.000Z' },
+  { id: 'mw-002', telescopeId: 'tel-003', startDate: '2025-10-11', endDate: '2025-10-15', reason: '主镜镀膜返厂维护', createdBy: '维护组-老周', createdAt: '2025-10-07T14:30:00.000Z' },
+  { id: 'mw-003', telescopeId: 'tel-004', startDate: '2025-10-13', endDate: '2025-10-14', reason: '外出观测，设备随行', createdBy: '维护组-老周', createdAt: '2025-10-09T10:15:00.000Z' },
+];
+
 /** 首次打开（表内无数据）时写入示例数据 */
 export async function seedIfEmpty(): Promise<void> {
   const flag = await db.meta.get('seeded');
   if (flag) return;
-  const [targetCount, sessionCount, telescopeCount, instrumentCount, nightCount] = await Promise.all([
+  const [targetCount, sessionCount, telescopeCount, instrumentCount, nightCount, maintenanceCount] = await Promise.all([
     db.targets.count(),
     db.sessions.count(),
     db.telescopes.count(),
     db.instruments.count(),
     db.nights.count(),
+    db.maintenanceWindows.count(),
   ]);
   // Dexie 的 transaction 最多接受 5 张表 + 作用域，因此 meta 标记在事务外写入
   await db.transaction('rw', db.targets, db.sessions, db.telescopes, db.instruments, db.nights, async () => {
@@ -153,22 +175,28 @@ export async function seedIfEmpty(): Promise<void> {
     if (instrumentCount === 0) await db.instruments.bulkPut(SEED_INSTRUMENTS);
     if (sessionCount === 0) await db.sessions.bulkPut(SEED_SESSIONS);
   });
+  // 维修窗口由维护组持有，单独事务写入，与排程段互不干扰
+  if (maintenanceCount === 0) {
+    await db.maintenanceWindows.bulkPut(SEED_MAINTENANCE_WINDOWS);
+  }
   await db.meta.put({ key: 'seeded', value: new Date().toISOString() });
 }
 
 /** 把 Dexie 数据同步到各 Zustand store（动态 import 规避模块循环依赖） */
 export async function hydrateAllStores(): Promise<void> {
-  const [{ useTargetStore }, { useSessionStore }, { useEquipmentStore }, { useNightStore }] = await Promise.all([
+  const [{ useTargetStore }, { useSessionStore }, { useEquipmentStore }, { useNightStore }, { useMaintenanceStore }] = await Promise.all([
     import('../stores/targetStore'),
     import('../stores/sessionStore'),
     import('../stores/equipmentStore'),
     import('../stores/nightStore'),
+    import('../stores/maintenanceStore'),
   ]);
   await Promise.all([
     useTargetStore.getState().hydrate(),
     useSessionStore.getState().hydrate(),
     useEquipmentStore.getState().hydrate(),
     useNightStore.getState().hydrate(),
+    useMaintenanceStore.getState().hydrate(),
   ]);
 }
 

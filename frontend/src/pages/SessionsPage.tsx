@@ -29,6 +29,7 @@ import { useSessionStore } from '../stores/sessionStore';
 import { useNightStore } from '../stores/nightStore';
 import { useTargetStore } from '../stores/targetStore';
 import { useEquipmentStore } from '../stores/equipmentStore';
+import { useMaintenanceStore } from '../stores/maintenanceStore';
 import { FILTER_NAMES, SESSION_STATUSES, type SessionStatus } from '../types';
 import { axisMinutes, durationMinutes, formatMinutes } from '../utils/astro';
 
@@ -57,6 +58,7 @@ export default function SessionsPage() {
   const targets = useTargetStore((s) => s.targets);
   const telescopes = useEquipmentStore((s) => s.telescopes);
   const instruments = useEquipmentStore((s) => s.instruments);
+  const maintenanceWindows = useMaintenanceStore((s) => s.windows);
   const { findConflicts, conflictIds } = useConflictCheck();
 
   /** 支持从设备分配视图一键跳转：?night=<夜ID>&highlight=<排程段ID> */
@@ -116,6 +118,15 @@ export default function SessionsPage() {
       ignoreSessionId: editingId || undefined,
     });
   }, [dialogOpen, findConflicts, form.nightId, form.telescopeId, form.startTime, form.endTime, editingId]);
+
+  /** 表单所选望远镜 + 观测夜是否落在维护窗口内（只读提示：编排端不能改维护组数据） */
+  const formMaintenanceWindow = useMemo(() => {
+    const formNight = nights.find((item) => item.id === form.nightId);
+    if (!formNight || !form.telescopeId) return undefined;
+    return maintenanceWindows.find(
+      (window) => window.telescopeId === form.telescopeId && window.startDate <= formNight.date && formNight.date <= window.endDate,
+    );
+  }, [maintenanceWindows, nights, form.nightId, form.telescopeId]);
 
   function openCreate() {
     setEditingId('');
@@ -353,6 +364,12 @@ export default function SessionsPage() {
               时段校验通过，该望远镜此时段空闲
             </Alert>
           )}
+          {formMaintenanceWindow ? (
+            <Alert severity="warning" variant="outlined" sx={{ mb: 1.5 }}>
+              该望远镜在本夜处于维护窗口（{formMaintenanceWindow.startDate} 至 {formMaintenanceWindow.endDate}，{formMaintenanceWindow.reason}）。
+              维修窗口由维护组登记，此处只读、不可修改；排程段与维修窗口的互相牵制将交到设备分配视图由值班人裁定。
+            </Alert>
+          ) : null}
           <FieldRow label="观测夜" required>
             <TextField select size="small" fullWidth value={form.nightId} onChange={(event) => setForm({ ...form, nightId: event.target.value })}>
               {nights.map((night) => (
